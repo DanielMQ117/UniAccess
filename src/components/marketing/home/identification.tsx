@@ -9,14 +9,19 @@ import Stack from "@mui/material/Stack";
 import { useColorScheme } from "@mui/material/styles";
 import Typography from "@mui/material/Typography";
 import { Scan as CameraIcon } from "@phosphor-icons/react/dist/ssr/Scan";
+import jsQR from "jsqr";
+
+import { extractData } from "@/lib/dataExtractor";
 
 export function Identification() {
+	const [data, setData] = React.useState<any>({});
 	const videoRef = React.useRef<HTMLVideoElement>(null);
-	const [image, setImage] = React.useState<string | null>(null);
+	const canvasRef = React.useRef<HTMLCanvasElement>(null);
 	const [cameras, setCameras] = React.useState<MediaDeviceInfo[]>([]);
 	const [anchorEl, setAnchorEl] = React.useState<null | HTMLElement>(null);
 	const [selectedCamera, setSelectedCamera] = React.useState<string | null>(null);
 	const [isStreamActive, setIsStreamActive] = React.useState(false); // Estado para controlar el stream
+	const [qrCode, setQrCode] = React.useState<string | boolean>(false); // Estado para almacenar el código QR detectado
 
 	const { colorScheme } = useColorScheme();
 	const [img, setImg] = React.useState("/assets/home-hero-light.png");
@@ -37,21 +42,26 @@ export function Identification() {
 	}, []);
 
 	// Iniciar la cámara
-	const startCamera = async (deviceId: string) => {
-		try {
-			const camara = {
-				video: { deviceId: { exact: deviceId } },
-			};
-			const stream = await navigator.mediaDevices.getUserMedia(camara);
-			if (videoRef.current) {
-				videoRef.current.srcObject = stream;
-				setIsStreamActive(true); // Activar el stream
+	React.useEffect(() => {
+		const startCamera = async (deviceId: string): Promise<void> => {
+			try {
+				const camara = {
+					video: { deviceId: { exact: deviceId } },
+				};
+				const stream = await navigator.mediaDevices.getUserMedia(camara);
+				if (videoRef.current) {
+					videoRef.current.srcObject = stream;
+					setIsStreamActive(true); // Activar el stream
+				}
+				setSelectedCamera(deviceId);
+			} catch (error) {
+				console.error("Error al acceder a la cámara:", error);
 			}
-			setSelectedCamera(deviceId);
-		} catch (error) {
-			console.error("Error al acceder a la cámara:", error);
+		};
+		if (selectedCamera) {
+			startCamera(selectedCamera);
 		}
-	};
+	}, [selectedCamera]); // Este efecto se ejecuta cuando selectedCamera cambia
 
 	// Detener la cámara
 	const stopCamera = () => {
@@ -60,26 +70,61 @@ export function Identification() {
 			stream.getTracks().forEach((track) => track.stop()); // Detener todas las pistas del stream
 			videoRef.current.srcObject = null;
 			setIsStreamActive(false); // Desactivar el stream
+			setQrCode(false); // Limpiar el código QR detectado
 		}
 	};
 
-	// Tomar una foto
-	const takePhoto = () => {
-		const video = videoRef.current;
-		if (video) {
-			video.addEventListener("loadeddata", () => {
-				const canvas = document.createElement("canvas");
+	// Escanear el código QR
+	React.useEffect(() => {
+		const tick = () => {
+			if (videoRef.current && canvasRef.current && videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
+				const video = videoRef.current;
+				const canvas = canvasRef.current;
+				const context = canvas.getContext("2d");
+
 				canvas.width = video.videoWidth;
 				canvas.height = video.videoHeight;
-				const context = canvas.getContext("2d");
-				if (context) {
-					context.drawImage(video, 0, 0, canvas.width, canvas.height);
-					const photo = canvas.toDataURL("image/png");
-					setImage(photo);
+
+				// Dibujar el frame del video en el canvas
+				context?.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+				// Extraer los datos de píxeles
+				const imageData = context?.getImageData(0, 0, canvas.width, canvas.height);
+
+				// Detectar el código QR
+				if (imageData) {
+					const code = jsQR(imageData.data, imageData.width, imageData.height, {
+						inversionAttempts: "dontInvert",
+					});
+
+					if (code) {
+						setQrCode(code.data); // Almacenar el código QR detectado
+					}
 				}
-			});
+			}
+
+			if (isStreamActive) {
+				requestAnimationFrame(tick); // Continuar escaneando
+			}
+		};
+
+		if (isStreamActive) {
+			tick(); // Iniciar el escaneo cuando el stream está activo
 		}
-	};
+	}, [isStreamActive]); // Este efecto se ejecuta cuando isStreamActive cambia
+
+	React.useEffect(() => {
+		// Extraer los datos del código QR solo si qrCode es válido y no es false
+		if (qrCode && typeof qrCode === "string") {
+			const info = extractData(qrCode);
+			console.log(info);
+			if (info) {
+				setData(info);
+			} else {
+				setData({}); // Asegurar que no se muestren datos inválidos
+			}
+		}
+	}, [qrCode]);
 
 	// Manejar el menú de selección de cámara
 	const handleMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
@@ -91,7 +136,7 @@ export function Identification() {
 	};
 
 	const handleCameraSelect = (deviceId: string) => {
-		startCamera(deviceId);
+		setSelectedCamera(deviceId);
 		handleMenuClose();
 	};
 
@@ -152,7 +197,6 @@ export function Identification() {
 							LECTOR QR
 						</Typography>
 						<Box sx={{ justifyContent: "center", alignSelf: "center", objectFit: "contain", padding: "2rem" }}>
-							{/* <Stack direction="row" spacing={2} alignItems="center" justifyContent="center"> */}
 							{!isStreamActive && (
 								<CameraIcon
 									style={{
@@ -177,8 +221,22 @@ export function Identification() {
 							>
 								<track kind="captions" />
 							</video>
-							{/* </Stack> */}
+							<canvas ref={canvasRef} style={{ display: "none" }} /> {/* Canvas oculto para el escaneo */}
 						</Box>
+						{qrCode && (
+							<Box
+								sx={{
+									width: "50dvw",
+									textAlign: "center",
+									wordWrap: "break-word",
+									overflowWrap: "break-word",
+									margin: "0 auto",
+								}}
+							>
+								<Typography variant="h6">Código QR detectado: {qrCode}</Typography>
+							</Box>
+						)}{" "}
+						{/* Mostrar el código QR */}
 					</Stack>
 					<Stack direction="row" spacing={2} sx={{ justifyContent: "center" }}>
 						{/* Botón para seleccionar cámara */}
@@ -210,17 +268,17 @@ export function Identification() {
 								Detener cámara
 							</Button>
 						)}
-						<Button
-							onClick={takePhoto}
-							variant="outlined"
-							sx={{
-								color: "var(--mui-palette-common-white)",
-								"&:hover": { bgcolor: "var(--mui-palette-action-hover)" },
-							}}
-						>
-							Tomar foto
-						</Button>
-						{image && <img src={image} alt="Captura" />}
+					</Stack>
+					<Stack direction="column" spacing={1} sx={{ justifyContent: "start" }}>
+						<Typography variant="h6">ID: {data?.first14 || ""}</Typography>
+						<Typography variant="h6">
+							Nombre:{" "}
+							{data
+								? `${data.firstName || ""} ${data.secondName || ""} ${data.lastName || ""} ${data.secondLastName || ""}`.trim()
+								: ""}
+						</Typography>
+						<Typography variant="h6">Ciudad: {data?.city || ""}</Typography>
+						<Typography variant="h6">Nacimiento: {data?.birthDate || ""}</Typography>
 					</Stack>
 				</Stack>
 			</Container>
